@@ -1,19 +1,25 @@
 import base64
+import binascii
 import hashlib
-import re
-import logging
 import json
+import logging
+import re
 import sys
-import six
 
 from binascii import a2b_base64
 
+import six
 from Cryptodome.PublicKey import RSA
 from Cryptodome.PublicKey.RSA import importKey
 from Cryptodome.PublicKey.RSA import RsaKey
 from Cryptodome.Util.asn1 import DerSequence
 
 from requests import request
+
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from jwkest import base64url_to_long, as_unicode
 from jwkest import as_bytes
@@ -25,6 +31,8 @@ from jwkest import b64e
 from jwkest import UnknownAlgorithm
 from jwkest.ecc import NISTEllipticCurve
 from jwkest.jwt import b2s_conv
+
+import oqs
 
 if sys.version > '3':
     long = int
@@ -527,6 +535,116 @@ class RSAKey(Key):
         return self.key
 
 
+class PQC(Key):
+    """
+    JSON Web key representation of a PQC key from thin air
+    """
+    members = Key.members + ['secret_key']
+    required = ['kty', 'alg', 'key']
+
+    def __init__(self, kty="PQC", alg="", use="sig", kid="", key=None, x5c=None,
+                x5t="", x5u="", **kwargs):
+        Key.__init__(self, kty, alg, use, kid, key, **kwargs)
+
+        if key:
+            self.deserialize()
+        else:
+            with oqs.Signature(alg) as signer:
+                self.key = signer.generate_keypair()
+                self.secret_key = signer.export_secret_key()
+
+    def deserialize(self):
+        self.key = base64.b64decode(self.key)
+
+    def serialize(self, private=False):
+        res = self.common()
+
+        if isinstance(self.key, str):
+            res.update({"key": self.key})
+        else:
+            res.update({"key": base64.b64encode(self.key).decode("utf-8")})
+
+        return res
+
+    def get_key(self, alg='', private=False):
+        return self.secret_key if private else self.key
+
+
+class CryptographyRSA(Key):
+    members = Key.members + ['secret_key']
+    required = ['kty', 'alg', 'key']
+
+    def __init__(self, kty="CryptographyRSA", alg="", use="sig", key_file="", kid="", key=None, x5c=None,
+                x5t="", x5u="", **kwargs):
+        Key.__init__(self, kty, alg, use, kid, key, **kwargs)
+
+        if key:
+            self.deserialize()
+        else:
+            if key_file:
+                with open(key_file, 'rb') as pem_in:
+                    self.secret_key = serialization.load_pem_private_key(pem_in.read(), None)
+                    self.key = self.secret_key.public_key()
+            else:
+                self.secret_key = rsa.generate_private_key(
+                    public_exponent=65537, key_size=3072, backend=default_backend()
+                )
+                self.key = self.secret_key.public_key()
+
+    def deserialize(self):
+        self.key = serialization.load_pem_public_key(self.key.encode())
+
+    def serialize(self, private=False):
+        res = self.common()
+
+        if isinstance(self.key, str):
+            res.update({"key": self.key})
+        else:
+            res.update({"key": self.key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode()})
+
+        return res
+
+    def get_key(self, alg='', private=False):
+        return self.secret_key if private else self.key
+
+
+class CryptographyECDSA(Key):
+    members = Key.members + ['secret_key']
+    required = ['kty', 'alg', 'key']
+
+    def __init__(self, kty="CryptographyECDSA", alg="", use="sig", key_file="", kid="", key=None, crv="P-256", x5c=None,
+                x5t="", x5u="", **kwargs):
+        Key.__init__(self, kty, alg, use, kid, key, crv, **kwargs)
+        self.crv = crv
+
+        if key:
+            self.deserialize()
+        else:
+            if key_file:
+                with open(key_file, 'rb') as pem_in:
+                    self.secret_key = serialization.load_pem_private_key(pem_in.read(), None)
+                    self.key = self.secret_key.public_key()
+            else:
+                self.secret_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+                self.key = self.secret_key.public_key()
+
+    def deserialize(self):
+        self.key = serialization.load_pem_public_key(self.key.encode())
+
+    def serialize(self, private=False):
+        res = self.common()
+
+        if isinstance(self.key, str):
+            res.update({"key": self.key})
+        else:
+            res.update({"key": self.key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode()})
+
+        return res
+
+    def get_key(self, alg='', private=False):
+        return self.secret_key if private else self.key
+
+
 class ECKey(Key):
     """
     JSON Web key representation of a Elliptic curve key
@@ -719,6 +837,12 @@ def keyrep(kspec, enc="utf-8"):
         item = SYMKey(**_kwargs)
     elif kspec["kty"] == "EC":
         item = ECKey(**_kwargs)
+    elif kspec["kty"] == "PQC":
+        item = PQC(**_kwargs)
+    elif kspec["kty"] == "CryptographyECDSA":
+        item = CryptographyECDSA(**_kwargs)
+    elif kspec["kty"] == "CryptographyRSA":
+        item = CryptographyRSA(**_kwargs)
     else:
         item = Key(**_kwargs)
     return item

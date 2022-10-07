@@ -20,7 +20,13 @@ from Cryptodome.Hash import SHA512
 from Cryptodome.Hash import HMAC
 from Cryptodome.Signature import PKCS1_v1_5
 from Cryptodome.Signature import PKCS1_PSS
+from Cryptodome.Signature import DSS
 from Cryptodome.Util.number import bytes_to_long
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import padding
+
 import sys
 
 from jwkest import b64d
@@ -48,6 +54,8 @@ from jwkest.jwk import keyrep
 
 from jwkest.jwt import JWT
 from jwkest.jwt import b64encode_item
+
+import oqs
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +159,26 @@ class RSASigner(Signer):
         except ValueError as e:
             raise BadSignature(str(e))
 
+class PQCSigner(Signer):
+    def __init__(self, sigalg):
+        self.sigalg = sigalg
+
+    def sign(self, msg, key):
+        with oqs.Signature(self.sigalg, key) as signer:
+            return signer.sign(msg)
+
+    def verify(self, msg, sig, key):
+        with oqs.Signature(self.sigalg) as verifier:
+            return verifier.verify(msg, sig, key)
+
+        try:
+            if (not is_valid):
+                raise BadSignature()
+
+            else:
+                return True
+        except ValueError as e:
+            raise BadSignature(str(e))
 
 class DSASigner(Signer):
     def __init__(self, digest, sign):
@@ -169,6 +197,49 @@ class DSASigner(Signer):
         else:
             raise BadSignature()
 
+class CryptographyRSASigner(Signer):
+    def __init__(self):
+        pass
+
+    def sign(self, msg, key):
+        return key.sign(
+            msg,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH
+            ),
+            hashes.SHA256()
+        )
+
+    def verify(self, msg, sig, key):
+        try:
+            key.verify(
+                sig,
+                msg,
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH
+                ),
+                hashes.SHA256()
+            )
+
+            return True
+        except ValueError:
+            raise BadSignature(str(e))
+
+class CryptographyECDSASigner(Signer):
+    def __init__(self):
+        pass
+
+    def sign(self, msg, key):
+        return key.sign(msg, ec.ECDSA(hashes.SHA256()))
+
+    def verify(self, msg, sig, key):
+        try:
+            key.verify(sig, msg, ec.ECDSA(hashes.SHA256()))
+            return True
+        except ValueError:
+            raise BadSignature(str(e))
 
 class PSSSigner(Signer):
     def __init__(self, digest):
@@ -198,6 +269,20 @@ SIGNER_ALGS = {
     'RS384': RSASigner(SHA384),
     'RS512': RSASigner(SHA512),
 
+    'Dilithium2': PQCSigner('Dilithium2'),
+    'Dilithium3': PQCSigner('Dilithium3'),
+    'Dilithium5': PQCSigner('Dilithium5'),
+
+    'Falcon-512': PQCSigner('Falcon-512'),
+    'Falcon-1024': PQCSigner('Falcon-1024'),
+    
+    'SPHINCS+-SHAKE256-128f-simple': PQCSigner('SPHINCS+-SHAKE256-128f-simple'),
+    'SPHINCS+-SHAKE256-192f-simple': PQCSigner('SPHINCS+-SHAKE256-192f-simple'),
+    'SPHINCS+-SHAKE256-256f-simple': PQCSigner('SPHINCS+-SHAKE256-256f-simple'),
+
+    'CryptographyECDSA': CryptographyECDSASigner(),
+    'CryptographyRSA': CryptographyRSASigner(),
+
     'ES256': DSASigner(SHA256, P256),
     'ES384': DSASigner(SHA384, P384),
     'ES512': DSASigner(SHA512, P521),
@@ -219,6 +304,8 @@ def alg2keytype(alg):
         return "oct"
     elif alg.startswith("ES") or alg.startswith("ECDH-ES"):
         return "EC"
+    elif alg == 'Dilithium2' or alg == 'Dilithium3' or alg == 'Dilithium5' or alg == 'Falcon-512' or alg == 'Falcon-1024' or alg == 'SPHINCS+-SHAKE256-128f-simple' or alg == 'SPHINCS+-SHAKE256-192f-simple' or alg == 'SPHINCS+-SHAKE256-256f-simple':
+        return "PQC"
     else:
         return None
 
@@ -382,7 +469,7 @@ class JWx(object):
             return []
 
         logger.debug("Picking key by key type={0}".format(_k))
-        _kty = [_k.lower(), _k.upper(), _k.lower().encode("utf-8"),
+        _kty = [_k, _k.lower(), _k.upper(), _k.lower().encode("utf-8"),
                 _k.upper().encode("utf-8")]
         _keys = [k for k in keys if k.kty in _kty]
         try:
