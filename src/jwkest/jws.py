@@ -304,10 +304,19 @@ def alg2keytype(alg):
         return "oct"
     elif alg.startswith("ES") or alg.startswith("ECDH-ES"):
         return "EC"
-    elif alg == 'Dilithium2' or alg == 'Dilithium3' or alg == 'Dilithium5' or alg == 'Falcon-512' or alg == 'Falcon-1024' or alg == 'SPHINCS+-SHAKE256-128f-simple' or alg == 'SPHINCS+-SHAKE256-192f-simple' or alg == 'SPHINCS+-SHAKE256-256f-simple':
+    elif (
+        alg == "Dilithium2"
+        or alg == "Dilithium3"
+        or alg == "Dilithium5"
+        or alg == "Falcon-512"
+        or alg == "Falcon-1024"
+        or alg == "SPHINCS+-SHAKE256-128f-simple"
+        or alg == "SPHINCS+-SHAKE256-192f-simple"
+        or alg == "SPHINCS+-SHAKE256-256f-simple"
+    ):
         return "PQC"
     else:
-        return None
+        return alg
 
 
 class JWSig(JWT):
